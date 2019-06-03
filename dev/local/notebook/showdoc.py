@@ -80,9 +80,15 @@ def get_source_link(func, local=False, is_name=None):
     find_name,nb_name = src
     nb = read_nb(nb_name)
     pat = re.compile(f'^{find_name}\s+=|^(def|class)\s+{find_name}\s*\(', re.MULTILINE)
+    if len(find_name.split('.')) == 2:
+        clas,func = find_name.split('.')
+        pat2 = re.compile(f'@patch\s*\ndef\s+{func}\s*\([^:]*:\s*{clas}\s*(?:,|\))')
+    else: pat2 = None
     for i,cell in enumerate(nb['cells']):
-        if cell['cell_type'] == 'code' and re.search(pat, cell['source']): break
-    if re.search(pat, cell['source']) is None:
+        if cell['cell_type'] == 'code':
+            if re.search(pat, cell['source']):  break
+            if pat2 is not None and re.search(pat2, cell['source']): break
+    if re.search(pat, cell['source']) is None and (pat2 is not None and re.search(pat2, cell['source']) is None):
         return '' if is_name else get_function_source(func)
     header_pat = re.compile(r'^\s*#+\s*(.*)$')
     while i >= 0:
@@ -132,12 +138,17 @@ def _format_enum_doc(enum, full_name):
     vals = ', '.join(enum.__members__.keys())
     return f'<code>{full_name}</code>',f'<code>Enum</code> = [{vals}]'
 
+def _escape_chars(s):
+    return s.replace('_', '\_')
+
 def _format_func_doc(func, full_name=None):
     "Formatted `func` definition to show in documentation"
-    sig = inspect.signature(func)
-    name = f'<code>{full_name or func.__name__}</code>'
-    fmt_params = [format_param(param) for name,param
+    try:
+        sig = inspect.signature(func)
+        fmt_params = [format_param(param) for name,param
                   in sig.parameters.items() if name not in ('self','cls')]
+    except: fmt_params = []
+    name = f'<code>{full_name or func.__name__}</code>'
     arg_str = f"({', '.join(fmt_params)})"
     f_name = f"<code>class</code> {name}" if inspect.isclass(func) else name
     return f'{f_name}',f'{name}{arg_str}'
@@ -157,8 +168,7 @@ def show_doc(elt, doc_string=True, name=None, title_level=None, disp=True, defau
         if is_enum(elt.__class__):   name,args = _format_enum_doc(elt, name)
         else:                        name,args = _format_cls_doc (elt, name)
     elif isinstance(elt, Callable):  name,args = _format_func_doc(elt, name)
-    elif isinstance(elt, property):  name,args = name, ''
-    else: raise Exception(f'show_doc not supported for {name}')
+    else:                            name,args = f"<code>{name}</code>", ''
     link = get_source_link(elt)
     source_link = f'<a href="{link}" class="source_link" style="float:right">[source]</a>'
     title_level = title_level or (default_cls_level if inspect.isclass(elt) else 4)
