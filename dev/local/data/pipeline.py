@@ -15,12 +15,12 @@ def show_title(o, ax=None, ctx=None):
 
 class Item():
     "An item that displays text (for `Transform.assoc`)"
-    def shows(o, ctx=None, **kwargs):
+    def show(o, ctx=None, **kwargs):
         show_title(o, ctx, **kwargs)
         return ctx
 
 class Transform():
-    order,assoc,filt,_is_setup,mask,is_tuple = [0]+[None]*5
+    order,assoc,filt,_is_setup,_done_setup,mask,is_tuple,prev = [0]+[None]*7
     def __init__(self, encodes=None, mask=None, is_tuple=None, **kwargs):
         if encodes is not None:
             self.encodes=encodes
@@ -32,6 +32,7 @@ class Transform():
         if self._is_setup: return
         self._is_setup = True
         self.setups(items)
+        self._done_setup = True
 
     def _masked(self,b):
         mask = [i==0 for i in range_of(b)] if self.mask is None and self.is_tuple else self.mask
@@ -46,9 +47,13 @@ class Transform():
     def __call__(self, b, filt=None, **kwargs): return self._apply(self.encodes, b, filt, **kwargs)
     def decode  (self, b, filt=None, **kwargs): return self._apply(self.decodes, b, filt, **kwargs)
 
+    def show(self, o, filt=None, **kwargs):
+        od = self.decode(o, filt=filt)
+        if self.assoc: return self.assoc.show(od, **kwargs)
+        elif self.prev: return self.prev.show(od, filt=filt, **kwargs)
+
     @classmethod
     def create(cls, f, filt=None): return f if isinstance(f,Transform) else cls(f)
-    def show(self, o, filt=None, **kwargs): return self.assoc.shows(self.decode(o, filt=filt), **kwargs)
     def __getitem__(self, x): return self(x) # So it can be used as a `Dataset`
     def decodes(self, o, *args, **kwargs): return o
     def setups(self, items): pass
@@ -60,19 +65,23 @@ def _set_tupled(tfms, m=True):
     for t in tfms: getattr(t,'set_tupled',noop)(m)
     return tfms
 
+def _get_assoc(tfm): return tfm.assoc if tfm.assoc else _get_assoc(tfm.prev) if tfm.prev else None
+
 @newchk
 class Pipeline(Transform):
     def __init__(self, tfms=None): self.tfms,self._tfms = [],L(tfms).mapped(Transform.create)
 
     def setups(self, items=None):
         "Transform setup"
-        tfms = self._tfms
-        self._tfms = None
+        tfms,self._tfms = self._tfms,None
         self.add(tfms, items)
 
     def add(self, tfms, items=None):
         "Call `setup` on all `tfms` and append them to this pipeline"
+        prev=None
         for t in sorted(L(tfms), key=lambda o: getattr(o, 'order', 0)):
+            if prev: t.prev=prev
+            prev=t
             self.tfms.append(t)
             if hasattr(t, 'setup'): t.setup(items)
 
@@ -91,14 +100,10 @@ class Pipeline(Transform):
     def __repr__(self): return str(self.tfms)
     def delete(self, idx): del(self.tfms[idx])
     def remove(self, tfm): self.tfms.remove(tfm)
-
-    def show(self, o, *args, **kwargs):
-        "Find last transform that supports `shows` and call it"
-        for t in reversed(self.tfms):
-            if getattr(t,'assoc',None) and hasattr(t.assoc,'shows'): return t.show(o, *args, **kwargs)
-            o = getattr(t, 'decode', noop)(o)
-
+    def show(self, o, *args, **kwargs): return self.tfms[-1].show(o, *args, **kwargs)
     def set_tupled(self, m=True): _set_tupled(self._tfms, m)
+    @property
+    def assoc(self): return _get_assoc(self.tfms[-1])
 
 def make_tfm(tfm):
     "Create a `Pipeline` (if `tfm` is listy) or a `Transform` otherwise"
@@ -143,7 +148,7 @@ class TfmOver(Transform):
     "Create tuple containing each of `tfms` applied to each of `o`"
     def __init__(self, tfms=None):
         if tfms is None: tfms = [None]
-        self.activ,self.tfms,self.assoc = None,L(tfms).mapped(Pipeline),Item
+        self.activ,self.tfms = None,L(tfms).mapped(Pipeline)
 
     def __call__(self, o, *args, **kwargs):
         "List of output of each of `tfms` on `o`"
@@ -164,6 +169,9 @@ class TfmOver(Transform):
             self.activ = i
             tfm.setup(o)
         self.activ=None
+
+    @property
+    def assoc(self): return [t.assoc for t in self.tfms]
 
     @classmethod
     def piped(cls, tfms=None, final_tfms=None):
